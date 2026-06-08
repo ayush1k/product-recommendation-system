@@ -23,7 +23,9 @@ const App = () => {
     return 'http://localhost:8000/api';
   };
 
-  const API_BASE = getApiUrl();
+  // Use relative `/api` during Vite dev to allow the dev-server proxy to forward requests to the backend.
+  // In production or unknown hosts, fall back to the dynamic URL detection.
+  const API_BASE = import.meta.env?.DEV ? '/api' : getApiUrl();
 
   const fetchAllProducts = async () => {
     setIsInitialLoading(true);
