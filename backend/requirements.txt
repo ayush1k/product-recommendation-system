@@ -1,0 +1,7 @@
+fastapi>=0.95.0
+uvicorn>=0.22.0
+python-dotenv>=1.0.0
+langchain-google-genai>=0.0.1
+langchain-huggingface>=0.0.1
+langchain-core>=0.0.1
+httpx>=0.24.0
