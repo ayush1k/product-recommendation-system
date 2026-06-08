@@ -85,6 +85,42 @@ prompt = PromptTemplate(
 
 chain = prompt | llm | parser
 
+# --- Constraint extraction via LLM ---
+constraints_parser = JsonOutputParser(pydantic_object=None)
+
+# We'll create a PromptTemplate that asks the LLM to return a JSON object matching
+# the `RecommendationConstraints` fields. We include the list of allowed category
+# tokens so the model must pick one of them (or null).
+constraints_template = """
+You are an assistant that extracts structured search constraints from a user's free-text query.
+Allowed categories: {allowed_categories}
+
+Return ONLY a JSON object with these fields (use null when not applicable):
+- category: one of the allowed categories (exact match) or null
+- max_price: number or null
+- min_price: number or null
+
+Be strict: do not output any other keys or explanatory text. Output must be valid JSON.
+
+User Query: {query}
+{format_instructions}
+"""
+
+from langchain_core.output_parsers import JsonOutputParser as _JsonParser
+from langchain_core.prompts import PromptTemplate as _PromptTemplate
+
+# Create a minimal JsonOutputParser by providing the format instructions text
+# from our Pydantic model shape so the LLM knows the expected schema.
+constraints_parser = JsonOutputParser(pydantic_object=None)
+constraints_prompt = PromptTemplate(
+    template=constraints_template,
+    input_variables=["query", "allowed_categories"],
+    partial_variables={"format_instructions": "Please return JSON with keys: category, max_price, min_price."}
+)
+
+# Chain for constraints: prompt -> llm -> parser
+# We'll invoke the LLM directly and parse the JSON response into the Pydantic model.
+
 
 # Parsed constraints derived from the user's natural language query.
 class RecommendationConstraints(BaseModel):
@@ -161,8 +197,30 @@ def apply_constraints(items: List[dict], constraints: RecommendationConstraints)
 
 @app.post("/api/recommend", response_model=List[Product])
 async def recommend_products(request: RecommendationRequest):
-    # Parse constraints early so they're available even if the LLM call fails
-    constraints = parse_constraints(request.query)
+    # First try to extract structured constraints using the LLM (preferred).
+    # If the LLM extraction fails, fall back to the rule-based parser.
+    allowed_categories = ["phone", "audio", "accessories", "computers", "gaming", "electronics"]
+    try:
+        constraints_parser = JsonOutputParser(pydantic_object=RecommendationConstraints)
+        chain_constraints = constraints_prompt | llm | constraints_parser
+        constraints_response = chain_constraints.invoke({
+            "query": request.query,
+            "allowed_categories": json.dumps(allowed_categories)
+        })
+        # Normalize into RecommendationConstraints
+        if hasattr(constraints_response, 'dict'):
+            constraints = RecommendationConstraints(**constraints_response.dict())
+        elif isinstance(constraints_response, dict):
+            constraints = RecommendationConstraints(**constraints_response)
+        else:
+            # try parsing raw JSON text
+            try:
+                parsed = json.loads(str(constraints_response))
+                constraints = RecommendationConstraints(**parsed)
+            except Exception:
+                constraints = parse_constraints(request.query)
+    except Exception:
+        constraints = parse_constraints(request.query)
     try:
         # Stringify products for the prompt
         products_str = json.dumps(products, indent=2)
