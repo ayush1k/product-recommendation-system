@@ -6,7 +6,7 @@ import os
 import json
 from dotenv import load_dotenv
 
-from langchain_huggingface import HuggingFaceEndpoint
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
@@ -56,12 +56,7 @@ class RecommendationOutput(BaseModel):
 # 4. Set up LangChain Pipeline
 # repo_id = "mistralai/Mistral-7B-Instruct-v0.2"
 
-llm = HuggingFaceEndpoint(
-    repo_id="tiiuae/falcon-7b-instruct",
-    max_new_tokens=128,
-    temperature=0.1,
-    huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
-)
+model = ChatGoogleGenerativeAI(model='gemini-2.5-flash', temperature=0)
 
 parser = JsonOutputParser(pydantic_object=RecommendationOutput)
 
@@ -86,7 +81,7 @@ prompt = PromptTemplate(
     partial_variables={"format_instructions": parser.get_format_instructions()}
 )
 
-chain = prompt | llm | parser
+chain = prompt | model | parser
 
 # --- Constraint extraction via LLM ---
 constraints_template = """
@@ -133,7 +128,7 @@ async def recommend_products(request: RecommendationRequest):
     allowed_categories = ["phone", "audio", "accessories", "computers", "gaming", "electronics"]
     try:
         constraints_parser = JsonOutputParser(pydantic_object=RecommendationConstraints)
-        chain_constraints = constraints_prompt | llm | constraints_parser
+        chain_constraints = constraints_prompt | model | constraints_parser
         constraints_response = chain_constraints.invoke({
             "query": request.query,
             "allowed_categories": json.dumps(allowed_categories)
