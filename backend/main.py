@@ -99,16 +99,68 @@ async def recommend_products(request: RecommendationRequest):
         
         # Handle cases where the response might not be in the exact format
         recommended_ids = response.get("recommended_ids", [])
-        
+
         # Filter products from database
         matched_products = [p for p in products if p["id"] in recommended_ids]
-        
+
+        # If the LLM returned no recommendations, fall back to a simple heuristic
+        # to provide useful results during development or when the LLM is unavailable.
+        if not matched_products:
+            q = request.query.lower()
+            # budget-oriented fallback
+            budget_terms = ["budget", "cheap", "affordable", "inexpensive", "low cost", "low-cost"]
+            fallback = []
+            if any(term in q for term in budget_terms):
+                # prefer phones and lower-priced items
+                fallback = [p for p in products if ("phone" in (p["name"] + p["description"]).lower()) or p["price"] <= 500]
+            else:
+                # token-match fallback: match words in name, description, or category
+                tokens = [t for t in q.split() if len(t) > 2]
+                for p in products:
+                    text = (p["name"] + " " + p["description"] + " " + p["category"]).lower()
+                    if any(t in text for t in tokens):
+                        fallback.append(p)
+
+            # dedupe and limit results
+            seen = set()
+            deduped = []
+            for p in fallback:
+                if p["id"] not in seen:
+                    deduped.append(p)
+                    seen.add(p["id"])
+                if len(deduped) >= 6:
+                    break
+
+            matched_products = deduped
+
         return matched_products
 
     except Exception as e:
         print(f"Error during recommendation: {e}")
-        # Return empty list as fallback
-        return []
+        # If the LLM call fails, fall back to the same heuristic used above
+        q = request.query.lower() if hasattr(request, 'query') else ''
+        budget_terms = ["budget", "cheap", "affordable", "inexpensive", "low cost", "low-cost"]
+        fallback = []
+        if any(term in q for term in budget_terms):
+            fallback = [p for p in products if ("phone" in (p["name"] + p["description"]).lower()) or p["price"] <= 500]
+        else:
+            tokens = [t for t in q.split() if len(t) > 2]
+            for p in products:
+                text = (p["name"] + " " + p["description"] + " " + p["category"]).lower()
+                if any(t in text for t in tokens):
+                    fallback.append(p)
+
+        # dedupe and limit
+        seen = set()
+        deduped = []
+        for p in fallback:
+            if p["id"] not in seen:
+                deduped.append(p)
+                seen.add(p["id"])
+            if len(deduped) >= 6:
+                break
+
+        return deduped
 
 @app.get("/api/products", response_model=List[Product])
 async def get_all_products():
