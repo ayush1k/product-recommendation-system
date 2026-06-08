@@ -85,8 +85,84 @@ prompt = PromptTemplate(
 
 chain = prompt | llm | parser
 
+
+# Parsed constraints derived from the user's natural language query.
+class RecommendationConstraints(BaseModel):
+    category: Optional[str] = None
+    max_price: Optional[float] = None
+    min_price: Optional[float] = None
+
+    class Config:
+        extra = 'forbid'
+
+
+def parse_constraints(q: str) -> RecommendationConstraints:
+    ql = q.lower()
+    c: dict = {}
+    # category detection
+    if any(tok in ql for tok in ("smartphone", "smartphones", "phone", "phones", "mobile", "mobiles")):
+        c['category'] = 'phone'
+    elif any(tok in ql for tok in ("audio", "headphone", "headphones", "speaker", "speakers")):
+        c['category'] = 'audio'
+    elif any(tok in ql for tok in ("computer", "laptop", "notebook")):
+        c['category'] = 'computers'
+
+    # budget / price hints
+    if any(term in ql for term in ("budget", "cheap", "affordable", "inexpensive", "low cost", "low-cost")):
+        c['max_price'] = 500.0
+    if any(term in ql for term in ("high-end", "premium", "expensive", "high end")):
+        c['min_price'] = 500.0
+
+    # explicit numeric price constraints like "under $300" or "below 400"
+    import re
+    m_under = re.search(r"(?:under|below|less than|<)\s*\$?(\d{2,5})", ql)
+    if m_under:
+        try:
+            c['max_price'] = float(m_under.group(1))
+        except:
+            pass
+    m_over = re.search(r"(?:over|above|more than|>)\s*\$?(\d{2,5})", ql)
+    if m_over:
+        try:
+            c['min_price'] = float(m_over.group(1))
+        except:
+            pass
+
+    return RecommendationConstraints(**c)
+
+
+def apply_constraints(items: List[dict], constraints: RecommendationConstraints) -> List[dict]:
+    if not constraints:
+        return items
+    out = []
+    for p in items:
+        text = (p['name'] + ' ' + p['description'] + ' ' + p['category']).lower()
+        import re
+        words = set(re.findall(r"\w+", text))
+        # category matching
+        if constraints.category:
+            cat = constraints.category
+            if cat == 'phone':
+                phone_tokens = {"phone", "phones", "smartphone", "smartphones", "mobile", "mobiles", "cellphone", "cellphones"}
+                if not (words & phone_tokens):
+                    continue
+            else:
+                if cat not in text:
+                    continue
+        # price matching
+        if constraints.max_price is not None and p.get('price') is not None:
+            if float(p['price']) > float(constraints.max_price):
+                continue
+        if constraints.min_price is not None and p.get('price') is not None:
+            if float(p['price']) < float(constraints.min_price):
+                continue
+        out.append(p)
+    return out
+
 @app.post("/api/recommend", response_model=List[Product])
 async def recommend_products(request: RecommendationRequest):
+    # Parse constraints early so they're available even if the LLM call fails
+    constraints = parse_constraints(request.query)
     try:
         # Stringify products for the prompt
         products_str = json.dumps(products, indent=2)
@@ -133,6 +209,9 @@ async def recommend_products(request: RecommendationRequest):
 
             matched_products = deduped
 
+        # Enforce parsed constraints strictly: return only items that match user's explicit intent
+        matched_products = apply_constraints(matched_products, constraints)
+
         return matched_products
 
     except Exception as e:
@@ -160,7 +239,8 @@ async def recommend_products(request: RecommendationRequest):
             if len(deduped) >= 6:
                 break
 
-        return deduped
+        # Apply constraints here as well before returning
+        return apply_constraints(deduped, constraints)
 
 @app.get("/api/products", response_model=List[Product])
 async def get_all_products():
